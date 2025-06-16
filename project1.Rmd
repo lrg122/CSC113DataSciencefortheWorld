@@ -1,0 +1,661 @@
+---
+title: "CSC113 Final Project: Climate Change and Inferencing"
+date: "Fall 2024 | Data Science for the World"
+author: "London Gibson-Purcell"
+always_allow_html: true
+output: 
+  word_document: default
+assignment_name: "project1"
+
+---
+
+This project investigates data on climate change, i.e., long-term shifts in temperatures and weather patterns in the United States. By the end of the project, you should know how to:
+
+1. Test whether observed data appear to be random samples from the same underlying distribution
+2. Tidy a dataset using R and the `tidyverse` to prepare data for analysis
+3. Apply inferencing in a case study where data were not randomly generated
+4. Implement and interpret a hypothesis test
+5. Generate and analyze visualizations, and then draw conclusions from them
+
+## Housekeeping
+
+__Rules.__ While collaboration is encouraged, sharing answers is never okay. In particular, posting code or other assignment answers publicly on Ed (or elsewhere) is academic dishonesty. It will result in a reduced project grade at a minimum. If you wish to ask a question that involves code, you *must* reach out to a TA or the instructor for help, either on Ed, during office hours, or by email.
+
+All of the concepts necessary for this project can be found in the textbook or were discussed in lecture. __You may not use any coding/statistical techniques or conventions that have not been covered by the course__. We reserve the right to penalize projects that are not within scope. Please reach out to us if you have any doubts.
+
+__Grading & Due Date.__ Parts 1 through 3 of the project are required and contribute to the total project grade. Parts 4 and 5 can be used for extra credit; it does __NOT__ need to be completed to earn full credit on the project. The entire project (parts 1, 2, 3, 4, and 5) is due on Gradescope by the end of the final exam period **Monday, December 9 at 10:30AM**.
+
+__Advice.__ Develop your answers incrementally. To perform a complicated task, break it up into steps, perform each step on a different line, give a new name to each result, and check that each intermediate result is what you expect. You can add as many additional names or functions as you need in the provided cells. __Start this project early and seek help early (either from the instructor, the TAs, etc.).__
+
+## On to the project!
+
+**Run the cell below** to prepare the notebook. You may need to install additional packages (use `install.packages()`). The automated tests for this project **definitely do not** catch all possible errors; they're designed to help you avoid some common mistakes.  Merely passing the tests does not guarantee full credit on any question.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(testthat)
+library(leaflet)
+library(geojsonio)
+states <- geojsonio::geojson_read(
+  "https://rstudio.github.io/leaflet/json/us-states.geojson", what = "sp")
+
+cities <- read_csv("data/city_info.csv") |> select(-1)
+needles <- read_csv("data/needles.csv") |> select(-1)
+southwest <- read_csv("data/southwest.csv")
+```
+
+In this project, we will investigate one of the 21st century's most prominent issues: climate change. While the details of climate science are beyond the scope of this course, we can start to learn about climate change just by analyzing public records of different cities' temperature and precipitation over time.
+
+We will analyze a collection of historical daily temperature and precipitation measurements from weather stations in 210 U.S. cities. The dataset was compiled by Yuchuan Lai and David Dzombak [1]; a description of the data from the original authors and the data itself is [also available](https://kilthub.cmu.edu/articles/dataset/Compiled_daily_temperature_and_precipitation_data_for_the_U_S_cities/7890488).
+
+[1] Lai, Yuchuan; Dzombak, David (2019): Compiled historical daily temperature and precipitation data for selected 210 U.S. cities. Carnegie Mellon University. Dataset.
+
+## Part I: Cities
+
+Let us examine the information about the `cities`.
+
+```{r}
+cities
+```
+
+The `cities` tibble has one row per weather station and the following columns:
+
+1. `"Name"`: The name of the US city
+2. `"ID"`: The unique identifier for the US city
+3. `"Lat"`: The latitude of the US city (measured in degrees of latitude)
+4. `"Lon"`: The longitude of the US city (measured in degrees of longitude)
+4. `"Stn.Name"`: The name of the weather station in which the data was collected
+5. `"Stn.stDate"`: A string representing the date of the first recording at that particular station
+6. `"Stn.edDate"`: A string representing the date of the last recording at that particular station
+
+The data lists the weather stations at which temperature and precipitation data were collected. Note that although some cities have multiple weather stations, only one is collecting data for that city at any given point in time. Thus, we are able to just focus on the cities themselves.
+
+__Question 1.1:__ Generate a scatter plot that plots the latitude and longitude of every city in the `cities` tibble so that the result places northern cities at the top and western cities at the left. Note that the same point can be plotted multiple times.
+
+__Hint:__ A latitude is the set of horizontal lines that measures distances north or south of the equator. A longitude is the set of vertical lines that measures distances east or west of the prime meridian.
+
+```{r tags=c()}
+ggplot(cities, aes(x = Lon, y = Lat)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  labs(
+    title = "Scatter Plot of US Cities by Latitude and Longitude",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal()
+```
+
+These cities are all within the continental U.S., and so the general shape of the U.S. should be visible in your plot. The shape will appear distorted compared to most maps for two reasons: the scatter plot is square even though the U.S. is wider than it is tall, and this scatter plot is an equirectangular projection of the spherical Earth. A geographical map of the same data uses the common Pseudo-Mercator projection.
+
+Run the following cell to see this in action:
+
+```{r}
+leaflet(states) |>
+  addTiles() |>
+  addMarkers(data=cities, ~Lon, ~Lat, popup = ~as.character(Name))
+```
+
+__Question 1.2:__ Do these city locations appear to be sampled uniformly at random from all the locations in the United States? Briefly explain your answer.
+
+No, there appears to be more weather stations on the eastern part of the country which has a higher populations density. The stations to the west seemed to be less frequent compared to the amount of the space available. 
+
+__Question 1.3:__ Assign `num_unique_cities` to the number of unique cities that appear in the `cities` tibble. You should use a `dplyr` verb to help answer this.
+
+```{r tags=c()}
+num_unique_cities <- cities |> 
+  summarise(unique_cities = n_distinct(Name)) |> 
+  pull(unique_cities)
+num_unique_cities
+```
+
+```{r}
+. = ottr::check("tests/part1_q3.R")
+```
+
+In order to investigate further, it will be helpful to determine what region of the United States each city was located in: Northeast, Northwest, Southeast, or Southwest. Let us use the following geographical boundaries:
+
+![](data/usa_coordinates.png)
+
+* A station is located in the `"Northeast"` region if its latitude is above or equal to 40 degrees and its longitude is greater than or equal to -100 degrees.
+* A station is located in the `"Northwest"` region if its latitude is above or equal to 40 degrees and its longitude is less than -100 degrees.
+* A station is located in the `"Southeast"` region if its latitude is below 40 degrees and its longitude is greater than or equal to -100 degrees.
+* A station is located in the `"Southwest"` region if its latitude is below 40 degrees and its longitude is less than -100 degrees.
+
+__Question 1.4:__ Define the function `convert_coordinates` below. It should receive two arguments, a city's latitude (`lat`) and longitude (`lon`) coordinates, and return a string representing the region it is located in.
+
+```{r tags=c()}
+convert_coordinates <- function(lat, lon) {
+  ifelse(lat >= 40 & lon >= -100, "Northeast",
+         ifelse(lat >= 40 & lon < -100, "Northwest",
+                ifelse(lat < 40 & lon >= -100, "Southeast",
+                       "Southwest")))
+}
+
+
+```
+
+```{r}
+. = ottr::check("tests/part1_q4.R")
+```
+
+__Question 1.5:__ Using the function you created (`convert_coordinates`), add a new column in `cities` named `Region` that contains the region in which the city is located. Assign the resulting tibble back to the name `cities`.
+
+```{r tags=c()}
+cities <- cities |> 
+  mutate(Region = convert_coordinates(Lat, Lon))
+cities
+```
+
+```{r}
+. = ottr::check("tests/part1_q5.R")
+```
+
+To confirm that you've defined your `convert_coordinates` function correctly and successfully added the `Region` column to the cities table, run the following cell. Each region should have a different color in the result.
+
+```{r}
+ggplot(cities) +
+  geom_point(aes(x = Lon, y = Lat, color = Region))
+```
+
+## Part II: Welcome to Needles, California
+
+Each city has a different CSV file of daily temperature and precipitation measurements. The file for Needles, California is included with this project as `needles.csv`. The files for other cities can be downloaded [here](https://kilthub.cmu.edu/articles/dataset/Compiled_daily_temperature_and_precipitation_data_for_the_U_S_cities/7890488) by matching them to the ID of the city in the `cities` tibble.
+
+Needles is located in in the Mojave Desert region of Southern California and is [known for its impressive temperatures](https://en.wikipedia.org/wiki/Needles,_California#Geography).
+
+![](data/route66.png)
+
+[Route 66 Sign in Needles, California](https://www.roadtripusa.com/route-66/california/needles/)
+
+Run the following cell to view the `needles` tibble. It has one row per day and the following columns:
+
+1. `"Date"`: The date (a string) representing the date of the recording in YYYY-MM-DD format
+2. `"tmax"`: The maximum temperature for the day (°F)
+3. `"tmin"`: The minimum temperature for the day (°F)
+4. `"prcp"`: The recorded precipitation for the day (inches)
+
+```{r}
+needles
+```
+
+According to the documentation, cities may miss substantial amounts of data during their periods of record. Let's check this for the Needles data. The following cell generates a line plot of the number of days with missing temperature data by year.
+
+```{r}
+needles |>
+  group_by(Year=year(Date)) |>
+  summarize(Days=sum(is.na(tmax) | is.na(tmin))) |>
+  ggplot() +
+  geom_line(aes(x = Year, y = Days)) +
+  scale_x_continuous(breaks = seq(1800, 2020, 10))+
+  scale_y_continuous(breaks = seq(0, 365, 50)) +
+  labs(title = "Missing Temperature Data")
+```
+
+__Question 2.1:__ Does the data appear to have a missing value problem? Do the missing values appear to be concentrated around certain years or randomly distributed over time? Briefly describe your observations.
+
+Yes, there are prolonged periods of time and large spikes where data is missing. This indicates that there was a consistent and concentrated issue with recording temperatures. Most of the missing data is from the 1800s which could be due to lack of proficient equipment resulting in lost data or errors. There are also several spikes which could be from troubling times in history like war periods and political instability where temperature recording wasn't funded or important at the time.
+
+__Question 2.2:__  One way to deal with missingness is to eliminate rows containing missing temperature data. If we can assume the missing entries are due to faulty equipment that fails randomly or another source of error that is unrelated to the data, this can be a plausible approach. Assign the name `needles_complete` to a copy of the data in `needles`, but omits daily entries that have missing temperature data (in either `tmax` or `tmin`).
+
+```{r tags=c()}
+needles_complete <- needles |>
+  filter(!is.na(tmax) & !is.na(tmin))
+
+needles_complete
+```
+
+```{r}
+. = ottr::check("tests/part2_q2.R")
+```
+
+__Question 2.3:__ Assign the name `largest_2017_range_date` to the date of the largest temperature range in Needles, California for any day between January 1st, 2017 and December 31st, 2017. To accomplish this, first create a new tibble, say named `needles_with_ranges_2017`, that is a copy of `needles_complete` but contains only days in 2017 and has an additional column corresponding to the temperature range for a given day.
+
+__Note:__ __Your answer should be a string in the "YYYY-MM-DD" format.__ Feel free to use as many lines as needed. A temperature range is calculated as the difference between the max and min temperatures for the day.
+
+```{r tags=c()}
+needles_with_ranges_2017 <- needles_complete |>
+  filter(year(Date) == 2017) |>
+  mutate(temperature_range = tmax - tmin)
+
+
+largest_2017_range_date <- needles_with_ranges_2017 |>
+  slice_max(order_by = temperature_range, n = 1) |>
+  pull(Date) |>
+  as.character()
+
+largest_2017_range_date
+```
+
+```{r}
+. = ottr::check("tests/part2_q3.R")
+```
+
+Let's take a look at the maximum temperature for that day.
+
+```{r}
+needles_complete |>
+  filter(Date == largest_2017_range_date)
+```
+
+YOWZA -- that's hot!
+
+The following function `get_year_from_date` takes a date string in the `"YYYY-MM-DD"` format and returns a double representing the year. The function `get_month_from_date` takes a date string and returns a string describing the month. Run this cell, but you do not need to understand how this code works or edit it.
+
+```{r}
+get_year_from_date <- function(date) {
+  year(date)
+}
+
+get_month_from_date <- function(date) {
+  ymd(date) |> format("%m (%b)")
+}
+
+# Examples
+str_c("2024-10-04 has year ", get_year_from_date("2024-10-04"))
+str_c("2024-10-04 has month ", get_month_from_date("2024-10-04"))
+```
+
+__Question 2.4:__ Add two new columns called `Year` and `Month` to the `needles_complete` tibble that contain the year as a __double__ and the month as a __string__ (e.g., `"10 (Oct)"` for October) for each day, respectively.
+
+```{r tags=c()}
+needles_complete <- needles_complete |>
+  mutate(
+    Year = get_year_from_date(Date),
+    Month = get_month_from_date(Date)
+  )
+needles_complete
+```
+
+```{r}
+. = ottr::check("tests/part2_q4.R")
+```
+
+__Question 2.5:__ Using the `needles_complete` tibble, generate an overlaid line plot of the average maximum temperature and average minimum temperature for each year between 1900 and 2021 (inclusive). The lines should be __colored differently to distinguish between minimum and maximum temperatures__ and __a corresponding legend should be shown__. As for all visualizations, text should be legible, axes labeled appropriately, have a title, etc.
+
+__Hint:__ Before applying `ggplot`, `dplyr`/`tidyr` verbs should be used to transform the data into the appropriate shape and summarize the relevant information.
+
+```{r tags=c()}
+temperature_summary <- needles_complete |>
+  filter(between(Year, 1900, 2021)) |>
+  group_by(Year) |>
+  summarize(
+    avg_tmax = mean(tmax, na.rm = TRUE),
+    avg_tmin = mean(tmin, na.rm = TRUE)
+  )
+
+ggplot(temperature_summary, aes(x = Year)) +
+  geom_line(aes(y = avg_tmax, color = "Average Max Temperature"), size = 1) +
+  geom_line(aes(y = avg_tmin, color = "Average Min Temperature"), size = 1) +
+  scale_color_manual(values = c("red", "blue")) +
+  labs(
+    title = "Average Maximum and Minimum Temperatures (1900-2021)",
+    x = "Year",
+    y = "Temperature (°F)",
+    color = "Temperature Type"
+  ) +
+  theme_minimal()
+```
+
+__Question 2.6:__ While still debated, many climate scientists agree that the effects of climate change began to surface in the early 1960s as a result of elevated levels of greenhouse gas emissions. Does the graph you produced in __Question 2.5__ support the claim that modern-day global warming began in the early 1960s?
+
+I would say the graph shows from around 1935-1940 when there was a big spike in temps and beyond there has been an upward trend in both max and min temperatures.
+
+Averaging temperatures across an entire year can obscure some effects of climate change. For example, if summers get hotter but winters get colder, the annual average may not change much. Let's investigate how average __monthly maximum temperatures__ have changed over time in Needles.
+
+We will consider two time spans, the period from 1900-1960 (i.e., the `"Past"`) and the period from 2019-2021 (i.e., the `"Present"`). The following function converts a year, expressed as a double, to a string representing its corresponding period. A year not covered by either period is classified into a third category `"Other"`.
+
+```{r}
+year_to_period <- function(year) {
+  if(between(year, 1900, 1960)) {
+    "Past"
+  } else if (between(year, 2019, 2021)) {
+    "Present"
+  } else {
+    "Other"
+  }
+}
+
+year_to_period(2020) # example call
+```
+
+__Question 2.7:__ Create a `monthly_increases` tibble with one row per month and the following four columns in order:
+
+1. `"Month"`: The month (such as `"10 (Oct)"`)
+2. `"Past"`: The average __max temperature__ in that month from 1900-1960 (both ends inclusive)
+3. `"Present"`: The average __max temperature__ in that month from 2019-2021 (both ends inclusive)
+4. `"Increase"`: The difference between the present and past average max temperatures in that month
+
+First, make a copy of the `needles_complete` tibble with a new column containing the corresponding __period__ for each row. You may find the `year_to_period` function helpful for this. Then, use this new tibble to construct `monthly_increases`.
+
+```{r tags=c()}
+
+needles_with_periods <- needles_complete |>
+  mutate(Period = sapply(Year, year_to_period))
+
+
+needles_with_periods <- needles_with_periods |>
+  mutate(Month = format(ymd(Date), "%m (%b)"))
+
+
+all_months <- c("01 (Jan)", "02 (Feb)", "03 (Mar)", "04 (Apr)", "05 (May)", "06 (Jun)",
+                "07 (Jul)", "08 (Aug)", "09 (Sep)", "10 (Oct)", "11 (Nov)", "12 (Dec)")
+
+# Now create the monthly_increases tibble
+monthly_increases <- needles_with_periods |>
+  filter(Period %in% c("Past", "Present")) |>
+  group_by(Month, Period) |>
+  summarize(
+    avg_max_temp = mean(tmax, na.rm = TRUE)
+  ) |>
+  spread(key = Period, value = avg_max_temp) |>
+  mutate(
+    Increase = Present - Past
+  ) |>
+  ungroup()
+
+
+monthly_increases <- monthly_increases |>
+  complete(Month = all_months, fill = list(Past = NA, Present = NA, Increase = NA))
+
+
+monthly_increases
+
+```
+
+```{r}
+. = ottr::check("tests/part2_q7.R")
+```
+
+## Part III: February in Needles
+
+The `"Past"` column values are averaged over many decades, and so they are reliable estimates of the average high temperatures in those months before the effects of modern climate change. However, the `"Present"` column is based on only three years of observations. February, the shortest month, has the fewest total observations: only 85 days. Run the following cell to see this.
+
+```{r}
+feb_present <- needles_complete |>
+  filter(between(Year, 2019, 2021) & Month == "02 (Feb)")
+feb_present
+```
+
+Look back to your `monthly_increases` tibble. The increase for the month of February is quite small; the February difference is close to zero. Run the following cell to print out our observed difference (in the `Increase` column).
+
+```{r}
+monthly_increases |>
+  slice(2)
+```
+
+Perhaps that small difference is somehow due to chance! Let's investigate this further.
+
+We can observe all of the February maximum temperatures from 2019 to 2021 (the present period), so we have access to the census; there's no random sampling involved. But, we can imagine that if more years pass with the same present-day climate, there would be different but similar maximum temperatures in future February days. From the data we observe, we can try to estimate the __average maximum February temperature__ in this imaginary collection of all future February days that would occur in our modern climate, assuming the climate doesn't change any further and many years pass.
+
+We can also imagine that the maximum temperature each day is like a __random draw from a distribution of max daily temperatures for that month__. Treating actual observations of natural events as if they were each *randomly* sampled from some unknown distribution is a simplifying assumption. These temperatures were not actually sampled at random -- instead they occurred due to the complex interactions of the Earth's climate -- but treating them as if they were random abstracts away the details of this naturally occurring process and allows us to carry out statistical inference. Conclusions are only as valid as the assumptions upon which they rest, but in this case thinking of daily temperatures as random samples from some unknown climate distribution seems at least plausible.
+
+If we assume that the __actual temperatures were drawn at random from some large population of possible February days__ in our modern climate, then we can not only estimate the population average of this distribution, but also quantify our uncertainty about that estimate using a confidence interval.
+
+__We will now compute the confidence interval of the present February average max daily temperature.__ To unpack this statement, we are saying that this confidence interval represents present-day February conditions. We will compare this confidence interval to the historical average (i.e., the `"Past"` value in our `monthly_increases` tibble). How will we do the comparison? Since we are interested in seeing if the average February max daily temperatures have __*changed*__ since the past, we care about whether the historical average lies within the confidence interval we create.
+
+__Based on the information above, think what the null hypothesis and alternative hypothesis are.__
+
+__Question 3.1:__ Complete the implementation of the function `generate_conf_int`, which takes as arguments a given month `month` and a confidence `level` percentage such as 0.95 or 0.99. In this function, a tibble `sample_observations` is generated with corresponding sample observations from the `needles_complete` tibble (code provided). __It then returns a two-element vector containing the lower and upper bound in that order, representing a confidence interval__ for the population mean constructed using 1,000 bootstrap resamples.
+
+We provided a line of code that calls your `generate_conf_int` function on the present-day February max temperatures to generate the 99% confidence interval for the average of daily max temperatures in February. The result should be around 67 degrees for the lower bound and around 71 degrees for the upper bound of the interval.
+
+__Hint:__ To implement the resampling procedure, it will be helpful to define a second function (say, `one_resampled_stat`) that simulates one resampled mean, which is then used by the `generate_conf_int` function.
+
+```{r tags=c()}
+one_resampled_stat <- function(sample_data) {
+  resample <- sample(sample_data, length(sample_data), replace = TRUE)
+  mean(resample)
+}
+
+generate_conf_int <- function(month_label, level) {
+  sample_observations <- needles_complete |>
+    filter(between(Year, 2019, 2021) & Month == month_label) |>
+  pull(tmax)
+  bootstrapped_means <- replicate(1000, one_resampled_stat(sample_observations))
+  
+ 
+  lower_bound <- quantile(bootstrapped_means, (1 - level) / 2)
+  upper_bound <- quantile(bootstrapped_means, 1 - (1 - level) / 2)
+  
+  return(c(lower_bound, upper_bound))
+}
+
+
+feb_present_ci <- generate_conf_int("02 (Feb)", 0.99)
+feb_present_ci
+```
+
+```{r}
+. = ottr::check("tests/part3_q1.R")
+```
+
+__Question 3.2:__ The `feb_present_ci` 99% confidence interval contains the observed past February average maximum temperature of 68.7 (from the `monthly_increases` tibble). What conclusion can you draw about the effect of climate change on February maximum temperatures in Needles from this information? Use a 1% P-value cutoff.
+
+
+Since the historical average of 68.7°F lies within the calculated 99% confidence interval of 66.76°F to 70.71°F, we cannot conclude that there has been a significant change in the average February maximum temperature between the past and the present (2019-2021). There is no strong statistical evidence to suggest that climate change has significantly affected the average maximum temperatures in February in Needles, California.
+## 🛑 STOP 🛑: You finished the project!
+
+This is the end of the required component of the project. If you do not plan on completing the extra credit portion, simply submit both the .Rmd notebook file at this point __AND__ a knitted PDF document before the final deadline. When submitting to Gradescope, disregard any failing automatic tests that correspond to Parts 4 and 5 of the project; you will not be penalized for this. 
+
+__The remainder of the project is extra credit ONLY. Do NOT continue unless you have fully completed and are confident in your solutions in Parts 1, 2, and 3.__
+
+## Part IV: All Months (EXTRA CREDIT)
+
+Let us extend the analysis to see whether the __past average__ is contained within the 99% confidence interval of the present average __for each month__. We will repeat the process of calling your `generate_conf_int` function for each month and organize the results into a tibble `all_months_ci`. Run the following cell to perform the experiment. Recall that these "averages" are averages of the max daily temperatures within those time periods.
+
+```{r}
+all_months_ci <- monthly_increases |>
+  mutate(ci = map(Month, \(x) generate_conf_int(x, 0.99))) |>
+  unnest_wider(ci, names_sep = "_")
+all_months_ci
+```
+
+__Question 4.1:__ Write `dplyr` code that adds a new Boolean variable to `all_months_ci` named `Contained`, which indicates whether the past average was contained in the interval (`TRUE`) or not (`FALSE`). Assign the resulting tibble to the name `all_months_ci`.
+
+```{r tags=c()}
+all_months_ci <- all_months_ci |>
+  mutate(Contained = Past >= `ci_0.5%` & Past <= `ci_99.5%`)
+
+all_months_ci
+```
+
+```{r}
+. = ottr::check("tests/part4_q1.R")
+```
+
+__Question 4.2:__ Summarize your findings. After checking whether the past average (of max temperatures) is contained in the 99% confidence interval for each month, what conclusions can we make about the monthly average maximum temperature in historical (1900-1960) vs. modern (2019-2021) times in the twelve months? Put another way, what null hypothesis should you consider, and for which months would you reject, fail to reject, or accept the null hypothesis? Use a 1% P-value cutoff.
+
+__Hint:__ Do you notice any seasonal patterns?
+
+There are more months where the historical average temp is not contained in the interval indicating that we can reject the null hypothesis and suggests that the temps are significantly different. I noticed that a lot of the colder months didn't show a lot of change compared to some of the warmer months.This could mean climate change has more noticeable effects during the warmer periods. Overall, there is prevalent variation to support warming trends in historical vs modern temperature data.
+
+## Part V: Drought (EXTRA CREDIT)
+
+According to the [United States Environmental Protection Agency](https://www.epa.gov/climate-indicators/southwest), "Large portions of the Southwest have experienced drought conditions since weekly Drought Monitor records began in 2000. For extended periods from 2002 to 2005 and from 2012 to 2020, nearly the entire region was abnormally dry or even drier."
+
+Assessing the impact of drought is challenging with just city-level data because so much of the water that people use is transported from elsewhere, but we'll explore the data we have and see what we can learn.
+
+Let's first take a look at the precipitation data in the Southwest region. The tibble `southwest` contains total annual precipitation for 13 cities in the southwestern United States for each year from 1960 to 2021. This dataset is aggregated from the daily data and includes only the Southwest cities from the original dataset that have consistent precipitation records back to 1960.
+
+```{r}
+southwest
+```
+
+__Question 5.1:__ Create a tibble `totals` that has one row for each year in chronological order. It should contain the following variables:
+
+1. `"Year"`: The year (a number)
+2. `"Precipitation"`: The total precipitation in all 13 southwestern cities that year
+
+```{r error=TRUE, tags=c()}
+totals <- southwest |>
+  group_by(Year) |>
+  summarize(Precipitation = sum(`Total Precipitation`, na.rm = TRUE)) |>
+  arrange(Year)
+totals
+```
+
+```{r}
+. = ottr::check("tests/part5_q1.R")
+```
+
+Run the cell below to plot the total precipitation in these cities over time, so that we can try to spot the drought visually. As a reminder, the drought years given by the EPA were (2002-2005) and (2012-2020).
+
+```{r error=TRUE}
+totals |>
+  ggplot() +
+  geom_line(aes(x = Year, y = Precipitation))
+```
+
+This plot isn't very revealing. Each year has a different amount of precipitation, and there is quite a bit of variability across years, as if each year's precipitation is a random draw from a distribution of possible outcomes.
+
+Could it be that these so-called "drought conditions" from 2002-2005 and 2012-2020 can be explained by chance? In other words, could it be that the annual precipitation amounts in the Southwest for these drought years are like __random draws from the same underlying distribution__ as for other years? Perhaps nothing about the Earth's precipitation patterns has really changed, and the Southwest U.S. just happened to experience a few dry years close together.
+
+To assess this idea, let's conduct a permutation test in which __each year's total precipitation__ is an outcome, and the condition is __whether or not the year is in the EPA's drought period__.
+
+The following function `year_to_drought` distinguishes between drought years as described in the U.S. EPA statement above (2002-2005 and 2012-2020) and other years. Note that the label "other" is perhaps misleading, since there were other droughts before 2000, such as the massive [1988 drought](https://en.wikipedia.org/wiki/1988%E2%80%9390_North_American_drought) that affected much of the U.S. However, if we're interested in whether these modern drought periods (2002-2005 and 2012-2020) are *normal* or *abnormal*, it makes sense to distinguish the years in this way.
+
+```{r error=TRUE}
+year_to_drought <- function(year) {
+  if(between(year, 2002, 2005) | between(year, 2012, 2020)) {
+    return('drought')
+  } else {
+    return('other')
+  }
+}
+```
+
+__Question 5.2:__ Define null and alternative hypotheses for a permutation test that investigates whether drought years are __drier__ (i.e., __have less precipitation__) than other years.
+
+Null Hypothesis: There is no difference in the total precipitation between drought years provided and other years. The drought years are not significantly drier than other years.
+
+Alternative Hypothesis: The drought years provided have less total precipitation than other years. The precipitation in the drought years is significantly lower compared to non-drought years.
+
+__Question 5.3:__ Form a tibble named `drought`. It should contain one row per year and the following two variables:
+
+* `"Label"`: Denotes if a year is part of a `"drought"` year or an `"other"` year
+* `"Precipitation"`: The sum of the total precipitation in 13 Southwest cities that year
+
+```{r error=TRUE, tags=c()}
+drought <- totals |>
+  mutate(Label = sapply(Year, year_to_drought)) |>
+  select(Label, Precipitation)
+
+
+drought
+```
+
+```{r}
+. = ottr::check("tests/part5_q3.R")
+```
+
+__Question 5.4:__ Using the tibble `drought`, construct an overlaid histogram of two observed distributions: the total precipitation in drought years and the total precipitation in other years. We have provided bins to use (in `bins`) when creating your histogram.
+
+```{r error=TRUE, tags=c()}
+bins <- seq(85, 215, 13)
+
+ggplot(drought, aes(x = Precipitation, fill = Label)) +
+  geom_histogram(data = subset(drought, Label == 'drought'), aes(y = ..density..), 
+                 bins = length(bins) - 1, alpha = 0.5, color = 'black') +
+  geom_histogram(data = subset(drought, Label == 'other'), aes(y = ..density..),
+                 bins = length(bins) - 1, alpha = 0.5, color = 'black') +
+  scale_fill_manual(values = c('drought' = 'red', 'other' = 'blue')) +
+  labs(title = "Overlaid Histogram of Precipitation in Drought vs. Other Years",
+       x = "Total Precipitation",
+       y = "Density") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+```
+
+Before you continue, inspect the histogram you just created and try to guess the conclusion of the permutation test. Building intuition about the result of hypothesis testing from visualizations is quite useful for data science applications.
+
+While we are at it, let us also check the `drought` tibble. It should have two variables `Label` and `Precipitation` with 61 rows, 13 of which are for `"drought"` years.
+
+```{r error=TRUE}
+drought |>
+  count(Label)
+```
+
+__Question 5.5.__ Our next step is to choose a test statistic based on the null and alternative hypotheses defined in __Question 5.2__. Define a good test statistic by writing a function `test_statistic` that implements the test statistic you have chosen. This function should receive a two-column tibble that is of the same form as `drought`. 
+
+**Important requirements for your test statistic:** To develop your test statistic, think about what kinds of values are evidence in favor of the alternative hypothesis and what values are insufficient evidence. You should look back to the hypotheses you defined in __Question 5.2__. What would a large positive value represent? A small negative value? A value close to 0?
+
+```{r error=TRUE, tags=c()}
+test_statistic <- function(data) {
+  
+  drought_mean <- mean(data$Precipitation[data$Label == "drought"], na.rm = TRUE)
+  
+  
+  other_mean <- mean(data$Precipitation[data$Label == "other"], na.rm = TRUE)
+  
+  
+  return(other_mean - drought_mean)
+}
+```
+
+In the following cell, we used the function you defined to assign `observed_statistic` to the observed value of the test statistic.
+
+```{r error=TRUE}
+observed_statistic <- test_statistic(drought)
+observed_statistic
+```
+
+**Question 5.6** Write a function to simulate the test statistic under the null hypothesis. The `simulate_precipitation_null` function should simulate the null hypothesis once (not 1,000 times) and return the value of the test statistic for that simulated sample.
+
+```{r error=TRUE, tags=c()}
+simulate_precipitation_null <- function() {
+  
+  shuffled_drought <- drought |>
+    mutate(Label = sample(Label))
+  
+
+  return(test_statistic(shuffled_drought))
+}
+
+# Run your function a couple times to make sure that it works
+simulate_precipitation_null()
+```
+
+```{r}
+. = ottr::check("tests/part5_q6.R")
+```
+
+**Question 5.7** Write R code to simulate 1,000 values of the test statistic under the null hypothesis. Store the result in a vector named `sampled_stats`.
+
+```{r error=TRUE, tags=c()}
+sampled_stats <- replicate(1000, simulate_precipitation_null())
+```
+
+```{r}
+. = ottr::check("tests/part5_q7.R")
+```
+
+Here is a histogram of the simulation results, annotated with the observed value of the test statistic.
+
+```{r warning=FALSE, error=TRUE}
+ggplot(tibble(sampled_stats)) +
+    geom_histogram(aes(x = sampled_stats, y = after_stat(density)),
+                   color = "gray", fill = "darkcyan", bins = 10) +
+    geom_point(aes(x = observed_statistic, y = 0), color = "red", size = 7)
+```
+
+
+**Question 5.8** State a conclusion from this test. You should reference some conventional P-value cutoff, such as 1% or 5%. What have you learned about the EPA's statement on drought?
+
+The test statistic function created calculates the the mean precipitation between the given set of drought years and other years. The large postive value from the simulated sample indicates that we could reject the null hypothesis. This is also shown in the histogram of the simulation results. The observed statistic is within the extreme 5% cutoff tail of the distribution suggesting that the provided droughts years (2002-2005 and 2012-2020) are significantly drier than other years. Overall, this would support what the EPA said about these years being unusually and exceptionally drier than other years.
+
+**Question 5.9** Does your conclusion from __Question 5.8__ apply to the entire Southwest region of the U.S.? Why or why not? Feel free to look into geographical features of this region!
+
+My conclusion from 5.8 may not necessarily apply to all areas of the Southwest region because it isn't just made up of dry desert habitats. The coastal areas of this region usually have more precipitation and there are geographical features like mountains and plains that can affect the overall climate of certain areas in the region.
+
+## This is the end of the extra credit portion of the project -- well done!!
+
+Make sure that all automatic tests are passing and that you are fully confident in the answers you have given. As with all your assignments, submit both the final .Rmd notebook file *AND* a generated PDF document before the final deadline noted at the top of this notebook and on Gradescope.
+
+
+
+
+
+
+
+
